@@ -40,12 +40,47 @@ def save_upload(file_bytes: bytes, filename: str) -> tuple[str, str]:
 
 async def run_diarization(job_id: str, file_path: str):
     try:
-        pyannote_job_id = client.diarize(file_path, transcription=True)
+        import requests
+        import uuid
+
+        headers = {
+            "Authorization": f"Bearer {settings.pyannote_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # Step 1 — request a pre-signed PUT URL from pyannoteAI
+        object_key = f"job-{uuid.uuid4().hex}"
+        media_response = requests.post(
+            "https://api.pyannote.ai/v1/media/input",
+            headers=headers,
+            json={"url": f"media://{object_key}"},
+        )
+
+        if media_response.status_code not in (200, 201):
+            raise Exception(f"Failed to get upload URL: {media_response.text}")
+
+        presigned_url = media_response.json()["url"]
+
+        # Step 2 — upload the actual file to the pre-signed URL
+        with open(file_path, "rb") as f:
+            put_response = requests.put(
+                presigned_url,
+                data=f,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+
+        if put_response.status_code not in (200, 201, 204):
+            raise Exception(f"File upload failed: {put_response.text}")
+
+        # Step 3 — submit diarization job using the media:// key
+        pyannote_job_id = client.diarize(
+            f"media://{object_key}",
+            transcription=True,
+        )
         result = client.retrieve(pyannote_job_id)
 
         segments = result["output"].get("diarization", [])
         transcript = result["output"].get("turnLevelTranscription", [])
-
         speakers = list({seg["speaker"] for seg in segments})
 
         job_store[job_id]["segments"] = segments
