@@ -113,12 +113,25 @@ def _build_clean_intervals_by_speaker(
     total_duration_ms: int,
     diarization_segments: list[dict] | None = None,
     confidence_data: dict | None = None,
+    *,
+    edge_trim_ms_override: int | None = None,
+    min_segment_ms_override: int | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     guard_ms = max(0, settings.overlap_guard_ms)
     high_conf_guard_ms = max(0, settings.high_confidence_overlap_guard_ms)
-    min_segment_ms = max(1, settings.min_clean_segment_ms)
+    min_segment_ms = max(
+        1,
+        int(min_segment_ms_override)
+        if min_segment_ms_override is not None
+        else settings.min_clean_segment_ms,
+    )
     confidence_threshold = settings.overlap_confidence_threshold
-    edge_trim_ms = max(0, settings.segment_edge_trim_ms)
+    edge_trim_ms = max(
+        0,
+        int(edge_trim_ms_override)
+        if edge_trim_ms_override is not None
+        else settings.segment_edge_trim_ms,
+    )
     drop_low_conf_turns = settings.drop_low_confidence_turns
     min_keep_confidence = settings.min_turn_confidence_to_keep
 
@@ -234,6 +247,44 @@ def _build_clean_intervals_by_speaker(
     return clean_by_speaker
 
 
+def _build_playback_intervals_by_speaker(
+    segments: list[dict],
+    total_duration_ms: int,
+    *,
+    edge_trim_ms: int = 0,
+    min_segment_ms: int = 1,
+) -> dict[str, list[tuple[int, int]]]:
+    """Build intervals for UI playback.
+
+    This is intentionally *less aggressive* than `_build_clean_intervals_by_speaker`.
+    For interactive playback we prefer hearing something (even if short / overlapped)
+    over dropping it entirely due to trimming/guards.
+
+    Expected segment format: {"speaker": str, "start": float, "end": float}.
+    """
+    trim = max(0, int(edge_trim_ms))
+    min_len = max(1, int(min_segment_ms))
+
+    raw: dict[str, list[tuple[int, int]]] = {}
+    for seg in segments or []:
+        speaker = seg.get("speaker")
+        start = seg.get("start")
+        end = seg.get("end")
+        if speaker is None or start is None or end is None:
+            continue
+
+        start_ms = max(0, int(float(start) * 1000) + trim)
+        end_ms = min(total_duration_ms, int(float(end) * 1000) - trim)
+        if end_ms <= start_ms:
+            continue
+        if (end_ms - start_ms) < min_len:
+            continue
+
+        raw.setdefault(str(speaker), []).append((start_ms, end_ms))
+
+    return {speaker: _normalize_intervals(intervals) for speaker, intervals in raw.items()}
+
+
 def slice_and_merge(
     job_id: str,
     original_path: str,
@@ -325,6 +376,61 @@ def slice_and_merge_with_silence(
             f"Denoising {speaker} timeline with {settings.split_audio_denoise_passes} pass(es)..."
         )
         denoise_audio(output_path, passes=settings.split_audio_denoise_passes)
+
+        output_paths[speaker] = output_path
+
+    return output_paths
+
+
+def build_speaker_timelines(
+    job_id: str,
+    original_path: str,
+    segments: list[dict],
+    diarization_segments: list[dict] | None = None,
+    confidence_data: dict | None = None,
+    denoise_passes: int = 0,
+) -> dict[str, str]:
+    """Create per-speaker WAVs aligned to the original timeline.
+
+    These files are intended for UI segment playback by seeking to
+    timestamps (start/end). Regions outside the speaker's intervals are
+    silence, so transcript/diarization timestamps line up.
+    """
+    audio = AudioSegment.from_file(original_path)
+    total_duration_ms = len(audio)
+    # For UI playback, prefer "no overlap" audio.
+    # Use exclusive diarization segments (already non-overlapping), then apply the
+    # same overlap/low-confidence blocking used for downloads, but *relax*
+    # trim/min-length so short turns are not dropped.
+    speaker_intervals = _build_clean_intervals_by_speaker(
+        segments,
+        total_duration_ms,
+        diarization_segments=diarization_segments,
+        confidence_data=confidence_data,
+        edge_trim_ms_override=0,
+        min_segment_ms_override=1,
+    )
+
+    job_dir = os.path.join(settings.tmp_dir, job_id)
+    output_paths: dict[str, str] = {}
+    fade_ms = max(0, settings.segment_fade_ms)
+    speakers = sorted(speaker_intervals.keys())
+
+    for speaker in speakers:
+        timeline = AudioSegment.silent(duration=total_duration_ms)
+
+        for start_ms, end_ms in speaker_intervals.get(speaker, []):
+            chunk = audio[start_ms:end_ms]
+            if fade_ms > 0 and len(chunk) > fade_ms * 2:
+                chunk = chunk.fade_in(fade_ms).fade_out(fade_ms)
+            timeline = timeline.overlay(chunk, position=start_ms)
+
+        output_path = os.path.join(job_dir, f"{speaker}_timeline.wav")
+        timeline.export(output_path, format="wav")
+
+        if denoise_passes > 0:
+            print(f"Denoising {speaker} timeline with {denoise_passes} pass(es)...")
+            denoise_audio(output_path, passes=denoise_passes)
 
         output_paths[speaker] = output_path
 

@@ -28,6 +28,10 @@ export const getDownloadUrl = (jobId, speaker) => {
   return `${api.defaults.baseURL}/api/download/${jobId}/${speaker}`;
 };
 
+export const getPlayUrl = (jobId, speaker) => {
+  return `${api.defaults.baseURL}/api/play/${jobId}/${speaker}`;
+};
+
 export const getDownloadAllUrl = (jobId) => {
   return `${api.defaults.baseURL}/api/download/${jobId}`;
 };

@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     max_file_size_mb: int = 200
     full_audio_denoise_passes: int = 1
     split_audio_denoise_passes: int = 2
+    # Denoise passes for the per-speaker *timeline* audio used for segment playback.
+    # Recommended default is 0 because the full audio is already denoised before diarization.
+    timeline_audio_denoise_passes: int = 0
     drop_overlap_audio: bool = True
     overlap_guard_ms: int = 400                    # fallback cross-speaker guard (was 500)
     confidence_aware_overlap_drop: bool = True

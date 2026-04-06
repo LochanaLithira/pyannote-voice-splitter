@@ -8,8 +8,9 @@ HEADERS = {"x-api-key": settings.audo_api_key}
 
 
 def denoise_audio(input_path: str, passes: int = 1) -> str:
-    if passes < 1:
-        raise ValueError("passes must be >= 1")
+    # Allow disabling denoise via configuration.
+    if passes <= 0:
+        return input_path
 
     for pass_num in range(1, passes + 1):
         print(f"[Audo AI] Pass {pass_num}/{passes} for {input_path}")

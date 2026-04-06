@@ -5,7 +5,7 @@ from pyannoteai.sdk import Client
 import warnings
 from config import settings
 from services.denoise_service import denoise_audio
-from services.audio_service import slice_and_merge
+from services.audio_service import slice_and_merge, build_speaker_timelines
 
 client = Client(settings.pyannote_api_key)
 
@@ -22,6 +22,7 @@ def create_job_entry(job_id: str, original_path: str):
         "labels": {},
         "error": None,
         "confidence_data": {},  # sample-level confidence from pyannoteAI
+        "timeline_output_paths": {},
     }
 
 
@@ -185,6 +186,18 @@ async def run_diarization(job_id: str, file_path: str):
             confidence_data=confidence_data,
         )
         job_store[job_id]["output_paths"] = output_paths
+
+        # Build per-speaker timeline WAVs for precise segment playback.
+        # Default: don't run extra denoise passes (the full audio is already denoised).
+        timeline_output_paths = build_speaker_timelines(
+            job_id,
+            file_path,
+            segments,
+            diarization_segments=diarization_segments,
+            confidence_data=confidence_data,
+            denoise_passes=settings.timeline_audio_denoise_passes,
+        )
+        job_store[job_id]["timeline_output_paths"] = timeline_output_paths
 
         job_store[job_id]["status"] = "done"
 
